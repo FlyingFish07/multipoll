@@ -1,0 +1,166 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the poll module.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function multipoll_schema() {
+  $schema['multipoll'] = array(
+    'description' => 'Stores poll-specific information for poll nodes.',
+    'fields' => array(
+      'nid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => "The poll's {node}.nid.",
+      ),
+      'runtime' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'The number of seconds past {node}.created during which the poll is open.',
+      ),
+      'active' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'Boolean indicating whether or not the poll is open.',
+      ),
+      'choice_num' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 1,
+        'description' => 'The number indicating how many the poll can choose.',
+      ),
+    ),
+    'primary key' => array('nid'),
+    'foreign keys' => array(
+      'poll_node' => array(
+        'table' => 'node',
+        'columns' => array('nid' => 'nid'),
+      ),
+    ),
+  );
+
+  $schema['multipoll_choice'] = array(
+    'description' => 'Stores information about all choices for all {poll}s.',
+    'fields' => array(
+      'chid' => array(
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'description' => 'Unique identifier for a poll choice.',
+      ),
+      'nid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'The {node}.nid this choice belongs to.',
+      ),
+      'chtext' => array(
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'The text for this choice.',
+        'translatable' => TRUE,
+      ),
+      'chvotes' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'The total number of votes this choice has received by all users.',
+      ),
+      'weight' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'The sort order of this choice among all choices for the same node.',
+      ),
+    ),
+    'indexes' => array(
+      'nid' => array('nid'),
+    ),
+    'primary key' => array('chid'),
+    'foreign keys' => array(
+      'choice_node' => array(
+        'table' => 'node',
+        'columns' => array('nid' => 'nid'),
+      ),
+    ),
+  );
+
+  $schema['multipoll_vote'] = array(
+    'description' => 'Stores per-{users} votes for each {poll}.',
+    'fields' => array(
+      'vtid' => array(
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'description' => 'Unique identifier for a poll vote.',
+      ),
+      'chids' => array(//记录选择的列表
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'description' => "The {users}'s vote for this poll.",
+      ),
+      'nid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'description' => 'The {poll} node this vote is for.',
+      ),
+      'uid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'The {users}.uid this vote is from unless the voter was anonymous.',
+      ),
+      'hostname' => array(
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'The IP address this vote is from unless the voter was logged in.',
+      ),
+      'timestamp' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => 'The timestamp of the vote creation.',
+      ),
+    ),
+    'primary key' => array('vtid'),
+    'unique keys' => array(
+      'nid_uid_hostname' => array('nid', 'uid','hostname'),
+    ),
+    'foreign keys' => array(
+      'poll_node' => array(
+        'table' => 'node',
+        'columns' => array('nid' => 'nid'),
+      ),
+      'voter' => array(
+        'table' => 'users',
+        'columns' => array('uid' => 'uid'),
+      ),
+    ),
+    'indexes' => array(
+      'chids'     => array('chids'),
+      'hostname' => array('hostname'),
+      'uid' => array('uid'),
+    ),
+  );
+
+  return $schema;
+}
+

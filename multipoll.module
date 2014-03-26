@@ -1,0 +1,903 @@
+<?php
+//$Id$
+/**
+ * @file
+ * 这个模块主要用于建立同时支持单选和多选的投票内容
+ *
+ */
+/**
+ * Implements hook_theme().
+ */
+function multipoll_theme() {
+  $theme_hooks = array(
+    'multipoll_one_vote' => array(
+      'template' => 'multipoll-one-vote',
+      'variables' => array('vote'=>NULL),
+    ),
+    'multipoll_vote' => array(
+      'template' => 'multipoll-vote',
+      'render element' => 'form',
+    ),
+    'multipoll_choices' => array(
+      'render element' => 'form', //这里定义的是输出的元素。这里没有template，所以使用的是theme函数
+    ),
+    'multipoll_results' => array(
+      'template' => 'multipoll-results',
+      'variables' => array('raw_title' => NULL, 'results' => NULL, 'votes' => NULL, 'raw_links' => NULL, 'block' => NULL, 'nid' => NULL, 'vote' => NULL),
+    ),
+    'multipoll_bar' => array(
+      'template' => 'multipoll-bar',
+      'variables' => array('title' => NULL, 'votes' => NULL, 'total_votes' => NULL, 'vote' => NULL, 'block' => NULL),
+    ),
+  );
+  // The theme system automatically discovers the theme's functions and
+  // templates that implement more targeted "suggestions" of generic theme
+  // hooks. But suggestions implemented by a module must be explicitly
+  // registered.
+  $theme_hooks += array(
+    'multipoll_results__block' => array(
+      'template' => 'multipoll-results--block',
+      'variables' => $theme_hooks['multipoll_results']['variables'],
+    ),
+    'multipoll_bar__block' => array(
+      'template' => 'multipoll-bar--block',
+      'variables' => $theme_hooks['multipoll_bar']['variables'],
+    ),
+  );
+  return $theme_hooks;
+}
+
+
+/**
+ * Implements hook_permission().
+ */
+function multipoll_permission() {
+  $perms = array(
+    'vote on multipolls' => array(
+      'title' => t('Vote on multipolls'),
+    ),
+     'cancel the multipoll vote' => array(
+       'title' => t('Cancel the multipoll votes'),
+     ),
+     'inspect all multipoll votes' => array(
+       'title' => t('View details for all multipoll votes'),
+     ),
+     'view the result before volt' => array(
+       'title' => t('view the volt reslut before vote'),
+     ),
+
+  );
+
+  return $perms;
+}
+/**
+ * Implements hook_menu().
+ */
+function multipoll_menu() {
+  $items['multipoll'] = array(
+    'title' => 'Polls',
+    'page callback' => 'multipoll_page',
+    'access arguments' => array('access content'),
+    'type' => MENU_SUGGESTED_ITEM,
+    'file' => 'multipoll.pages.inc',
+  );
+
+  $items['node/%node/mpvotes'] = array(
+    'title' => 'Votes',
+    'page callback' => 'multipoll_votes',
+    'page arguments' => array(1),
+    'access callback' => '_multipoll_menu_access',
+    'access arguments' => array(1, 'inspect all multipoll votes', FALSE),
+    'weight' => 3,
+    'type' => MENU_LOCAL_TASK,
+    'file' => 'multipoll.pages.inc',
+  );
+
+  $items['node/%node/mpresults'] = array(
+    'title' => 'Results',
+    'page callback' => 'multipoll_results',
+    'page arguments' => array(1),//首先调用node_load
+    'access callback' => '_multipoll_menu_access',
+    'access arguments' => array(1, 'view the result before volt', TRUE),
+    'weight' => 3,
+    'type' => MENU_LOCAL_TASK,
+    'file' => 'multipoll.pages.inc',
+  );
+  $items['multipoll/vote/%'] = array(
+  	'title' => 'Vote content',
+    'page callback' => 'multipoll_vote_cntnt',
+    'page arguments' => array(2),//路径从0开始，这里取第二个
+    'access arguments' => array('inspect all multipoll votes'),
+    'type' => MENU_CALLBACK,
+    'file' => 'multipoll.pages.inc',
+  );
+  return $items;
+}
+
+/**
+ * Callback function to see if a node is acceptable for poll menu items.
+ */
+function _multipoll_menu_access($node, $perm, $inspect_allowvotes) {
+  return user_access($perm) && ($node->type == 'multipoll') && ($node->allowvotes || !$inspect_allowvotes);
+}
+
+/**
+ * Implements hook_cron().
+ *
+ * Closes polls that have exceeded their allowed runtime.
+ */
+function multipoll_cron() {
+  $nids = db_query('SELECT p.nid FROM {poll} p INNER JOIN {node} n ON p.nid = n.nid WHERE (n.created + p.runtime) < :request_time AND p.active = :active AND p.runtime <> :runtime', array(':request_time' => REQUEST_TIME, ':active' => 1, ':runtime' => 0))->fetchCol();
+  if (!empty($nids)) {
+    db_update('poll')
+      ->fields(array('active' => 0))
+      ->condition('nid', $nids, 'IN')
+      ->execute();
+  }
+}
+/**
+ * Implements hook_node_info().
+ */
+function multipoll_node_info() {
+  return array(
+    'multipoll' => array(
+      'name' => t('MultiPoll'),
+      'base' => 'multipoll',  //后面的hook_form，hook_validate等都是基于这里设置的base
+      'description' => t('A <em>Approval Voting Poll</em> is a question with a set of possible responses.'),
+      'title_label' => t('Question'),
+      'has_body' => FALSE,
+    )
+  );
+}
+/**
+ * hook_field_extra_fields   可以在管理界面修改元素位置。
+ * @return multitype:multitype:multitype:number NULL
+ */
+function multipoll_field_extra_fields() {
+  $extra['node']['multipoll'] = array(
+    'form' => array(
+      'choice_wrapper' => array(
+        'label' => t('Poll choices'),
+        'description' => t('Poll choices'),
+        'weight' => -4,
+      ),
+      'settings' => array(
+        'label' => t('Poll settings'),
+        'description' => t('Poll module settings'),
+        'weight' => -3,
+      ),
+    ),
+    'display' => array(
+      'multipll_help' => array(
+        'label' => t('MultiPoll helps'),
+        'description' => t('MultiPoll helps'),
+        'weight' => -1,
+      ),
+      'poll_view_voting' => array(
+        'label' => t('Poll vote'),
+        'description' => t('Poll vote'),
+        'weight' => 0,
+      ),
+      'poll_view_results' => array(
+        'label' => t('Poll results'),
+        'description' => t('Poll results'),
+        'weight' => 0,
+      ),
+    )
+  );
+
+  return $extra;
+}
+
+/**
+ * Implements hook_form(). 这个方法和hook_node_info配合使用，在新增和编辑时调用
+ */
+function multipoll_form($node, &$form_state) {
+  global $user;
+
+  $admin = user_access('bypass node access') || user_access('edit any multipoll content') || (user_access('edit own multipoll content') && $user->uid == $node->uid);
+
+  $type = node_type_get_type($node);
+
+  // The submit handlers to add more poll choices require that this form is
+  // cached, regardless of whether Ajax is used.
+  $form_state['cache'] = TRUE;
+
+  $form['title'] = array(
+    '#type' => 'textfield',
+    '#title' => check_plain($type->title_label),
+    '#required' => TRUE,
+    '#default_value' => $node->title,
+    '#weight' => -5,
+  );
+
+  if (isset($form_state['choice_count'])) {
+    $choice_count = $form_state['choice_count'];
+  }
+  else {
+    $choice_count = max(2, empty($node->choice) ? 2 : count($node->choice));
+  }
+
+  // Add a wrapper for the choices and more button.
+  $form['choice_wrapper'] = array(
+    '#tree' => FALSE,
+    '#weight' => -4,
+    '#prefix' => '<div class="clearfix" id="poll-choice-wrapper">',
+    '#suffix' => '</div>',
+  );
+
+  // Container for just the poll choices.
+  $form['choice_wrapper']['choice'] = array(
+    '#prefix' => '<div id="multipoll-choices">',
+    '#suffix' => '</div>',
+    '#theme' => 'multipoll_choices',
+  );
+
+  // Add the current choices to the form.
+  $delta = 0;
+  $weight = 0;
+  if (isset($node->choice)) {
+    $delta = count($node->choice);
+    foreach ($node->choice as $chid => $choice) {
+      $key = 'chid:' . $chid;
+      $form['choice_wrapper']['choice'][$key] = _multipoll_choice_form($key, $choice['chid'], $choice['chtext'], $choice['chvotes'], $choice['weight'], $choice_count);
+      $weight = max($choice['weight'], $weight);
+    }
+  }
+
+  // Add initial or additional choices.
+  $existing_delta = $delta;
+  for ($delta; $delta < $choice_count; $delta++) {
+    $key = 'new:' . ($delta - $existing_delta);
+    // Increase the weight of each new choice.
+    $weight++;
+    $form['choice_wrapper']['choice'][$key] = _multipoll_choice_form($key, NULL, '', 0, $weight, $choice_count);
+  }
+
+  // We name our button 'poll_more' to avoid conflicts with other modules using
+  // Ajax-enabled buttons with the id 'more'.
+  $form['choice_wrapper']['poll_more'] = array(
+    '#type' => 'submit',
+    '#value' => t('More choices'),
+    '#attributes' => array(
+      'title' => t("If the amount of boxes above isn't enough, click here to add more choices."),
+    ),
+    '#weight' => 1,
+    '#limit_validation_errors' => array(array('choice')),
+    '#submit' => array('multipoll_more_choices_submit'),
+    '#ajax' => array(
+      'callback' => 'multipoll_choice_js',
+      'wrapper' => 'multipoll-choices',
+      'effect' => 'fade',
+    ),
+  );
+
+  // Poll attributes
+  $duration = array(
+    // 1-6 days.
+    86400, 2 * 86400, 3 * 86400, 4 * 86400, 5 * 86400, 6 * 86400,
+    // 1-3 weeks (7 days).
+    604800, 2 * 604800, 3 * 604800,
+    // 1-3,6,9 months (30 days).
+    2592000, 2 * 2592000, 3 * 2592000, 6 * 2592000, 9 * 2592000,
+    // 1 year (365 days).
+    31536000,
+  );
+  $duration = array(0 => t('Unlimited')) + drupal_map_assoc($duration, 'format_interval');
+  $active = array(0 => t('Closed'), 1 => t('Active'));
+
+  $form['settings'] = array(
+    '#type' => 'fieldset',
+    '#collapsible' => TRUE,
+    '#title' => t('Poll settings'),
+    '#weight' => -3,
+    '#access' => $admin,
+  );
+
+  $form['settings']['active'] = array(
+    '#type' => 'radios',
+    '#title' => t('Poll status'),
+    '#default_value' => isset($node->active) ? $node->active : 1,
+    '#options' => $active,
+    '#description' => t('When a poll is closed, visitors can no longer vote for it.'),
+    '#access' => $admin,
+  );
+  $form['settings']['choice_num'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Choices Num'),
+    '#default_value' => 1,
+    '#size' => 3,
+    '#maxlength' => 3,
+    '#required' => TRUE,
+    '#description' => t('How many choices can choose at one time.'),
+    '#access' => $admin,
+  );
+  $form['settings']['runtime'] = array(
+    '#type' => 'select',
+    '#title' => t('Poll duration'),
+    '#default_value' => isset($node->runtime) ? $node->runtime : 0,
+    '#options' => $duration,
+    '#description' => t('After this period, the poll will be closed automatically.'),
+  );
+  return $form;
+}
+/**
+ * Implements hook_field_attach_prepare_translation_alter().
+ */
+function poll_field_attach_prepare_translation_alter(&$entity, $context) {
+  if ($context['entity_type'] == 'node' && $entity->type == 'poll') {
+    $entity->choice = $context['source_entity']->choice;
+    foreach ($entity->choice as $i => $options) {
+      $entity->choice[$i]['chvotes'] = 0;
+    }
+  }
+}
+
+/**
+ * Implements hook_load().  用于加载除了node和revision之外的内容的。
+ */
+function multipoll_load($nodes) {
+  global $user;
+  foreach ($nodes as $node) {
+    $poll = db_query("SELECT runtime, active, choice_num FROM {multipoll} WHERE nid = :nid", array(':nid' => $node->nid))->fetchObject();
+
+    if (empty($poll)) {
+      $poll = new stdClass();
+    }
+
+    // Load the appropriate choices into the $poll object.
+    $poll->choice = db_select('multipoll_choice', 'c')
+      ->addTag('translatable')
+      ->fields('c', array('chid', 'chtext', 'chvotes', 'weight'))
+      ->condition('c.nid', $node->nid)
+      ->orderBy('weight')
+      ->execute()->fetchAllAssoc('chid', PDO::FETCH_ASSOC);
+
+    // Determine whether or not this user is allowed to vote.
+    $poll->allowvotes = FALSE;
+    if (user_access('vote on multipolls') && $poll->active) {
+      if ($user->uid) {
+        // If authenticated, find existing vote based on uid.
+        $poll->vote = db_query('SELECT vtid FROM {multipoll_vote} WHERE nid = :nid AND uid = :uid', array(':nid' => $node->nid, ':uid' => $user->uid))->fetchField();
+        if (empty($poll->vote)) {
+          $poll->vote = -1;
+          $poll->allowvotes = TRUE;
+        }
+      }
+      elseif (!empty($_SESSION['multipoll_vote'][$node->nid])) {
+        // Otherwise the user is anonymous. Look for an existing vote in the
+        // user's session.
+        $poll->vote = $_SESSION['multipoll_vote'][$node->nid];
+      }
+      else {
+        // Finally, query the database for an existing vote based on anonymous
+        // user's hostname.
+        $poll->allowvotes = !db_query("SELECT 1 FROM {multipoll_vote} WHERE nid = :nid AND hostname = :hostname AND uid = 0", array(':nid' => $node->nid, ':hostname' => ip_address()))->fetchField();
+      }
+    }
+    foreach ($poll as $key => $value) {
+      $nodes[$node->nid]->$key = $value;
+    }
+    //dpm($node);
+  }
+}
+/**
+ * Implements hook_validate().
+ */
+function multipoll_validate($node, $form) {
+  if (isset($node->title)) {
+    // Check for at least two options and validate amount of votes.
+    $realchoices = 0;
+    foreach ($node->choice as $i => $choice) {
+      if ($choice['chtext'] != '') {
+        $realchoices++;
+      }
+      if (isset($choice['chvotes']) && $choice['chvotes'] < 0) {
+        form_set_error("choice][$i][chvotes", t('Negative values are not allowed.'));
+      }
+    }
+
+    if ($realchoices < 2) {
+      form_set_error("choice][$realchoices][chtext", t('You must fill in at least two choices.'));
+    }
+  }
+  if (intval($node->choice_num) < 1) {
+     form_set_error("choice_num", t('You must fill in an interger bigger than 0.'));
+  }
+
+}
+/**
+ * Ajax callback in response to new choices being added to the form.
+ *
+ * This returns the new page content to replace the page content made obsolete
+ * by the form submission.
+ *
+ * @see poll_more_choices_submit()
+ */
+function multipoll_choice_js($form, $form_state) {
+  return $form['choice_wrapper']['choice'];
+}
+
+
+/**
+ * Form submit handler for node_form().
+ *
+ * Upon preview and final submission, we need to renumber poll choices and
+ * create a teaser output.
+ */
+function multipoll_node_form_submit(&$form, &$form_state) {
+  // Renumber choices.
+  $form_state['values']['choice'] = array_values($form_state['values']['choice']);
+  $form_state['values']['teaser'] = multipoll_teaser((object) $form_state['values']);
+}
+
+/**
+ * Creates a simple teaser that lists all the choices.
+ *
+ * This is primarily used for RSS.
+ */
+function multipoll_teaser($node) {
+  $teaser = NULL;
+  if (is_array($node->choice)) {
+    foreach ($node->choice as $k => $choice) {
+      if ($choice['chtext'] != '') {
+        $teaser .= '* ' . check_plain($choice['chtext']) . "\n";
+      }
+    }
+  }
+  return $teaser;
+}
+
+/**
+ * Submit handler to add more choices to a poll form.
+ *
+ * This handler is run regardless of whether JS is enabled or not. It makes
+ * changes to the form state. If the button was clicked with JS disabled, then
+ * the page is reloaded with the complete rebuilt form. If the button was
+ * clicked with JS enabled, then ajax_form_callback() calls poll_choice_js() to
+ * return just the changed part of the form.
+ */
+function multipoll_more_choices_submit($form, &$form_state) {
+  // If this is a Ajax POST, add 1, otherwise add 5 more choices to the form.
+  if ($form_state['values']['poll_more']) {
+    $n = $_GET['q'] == 'system/ajax' ? 1 : 5;
+    $form_state['choice_count'] = count($form_state['values']['choice']) + $n;
+  }
+  // Renumber the choices. This invalidates the corresponding key/value
+  // associations in $form_state['input'], so clear that out. This requires
+  // poll_form() to rebuild the choices with the values in
+  // $form_state['node']->choice, which it does.
+  $form_state['node']->choice = array_values($form_state['values']['choice']);
+  unset($form_state['input']['choice']);
+  $form_state['rebuild'] = TRUE;
+}
+
+function _multipoll_choice_form($key, $chid = NULL, $value = '', $votes = 0, $weight = 0, $size = 10) {
+  $form = array(
+    '#tree' => TRUE,
+    '#weight' => $weight,
+  );
+
+  // We'll manually set the #parents property of these fields so that
+  // their values appear in the $form_state['values']['choice'] array.
+  $form['chid'] = array(
+    '#type' => 'value',
+    '#value' => $chid,
+    '#parents' => array('choice', $key, 'chid'),
+  );
+
+  $form['chtext'] = array(
+    '#type' => 'textfield',
+    '#title' => $value !== '' ? t('Choice label') : t('New choice label'),
+    '#title_display' => 'invisible',
+    '#default_value' => $value,
+    '#parents' => array('choice', $key, 'chtext'),
+  );
+
+  $form['chvotes'] = array(
+    '#type' => 'textfield',
+    '#title' => $value !== '' ? t('Vote count for choice @label', array('@label' => $value)) : t('Vote count for new choice'),
+    '#title_display' => 'invisible',
+    '#default_value' => $votes,
+    '#size' => 5,
+    '#maxlength' => 7,
+    '#parents' => array('choice', $key, 'chvotes'),
+    '#access' => user_access('administer nodes'),
+    '#element_validate' => array('element_validate_integer'),
+  );
+
+  $form['weight'] = array(
+    '#type' => 'weight',
+    '#title' => $value !== '' ? t('Weight for choice @label', array('@label' => $value)) : t('Weight for new choice'),
+    '#title_display' => 'invisible',
+    '#default_value' => $weight,
+    '#delta' => $size,
+    '#parents' => array('choice', $key, 'weight'),
+  );
+
+  return $form;
+}
+
+/**
+ * Implements hook_insert().
+ */
+function multipoll_insert($node) {
+  //dpm($node);
+  if (!user_access('administer nodes')) {
+    // Make sure all votes are 0 initially
+    foreach ($node->choice as $i => $choice) {
+      $node->choice[$i]['chvotes'] = 0;
+    }
+    $node->active = 1;
+  }
+  $choich_num = max(1,intval($node->choice_num));
+
+  db_insert('multipoll')
+    ->fields(array(
+      'nid' => $node->nid,
+      'runtime' => $node->runtime,
+      'active' => $node->active,
+      'choice_num' => $choich_num,
+    ))
+    ->execute();
+
+  foreach ($node->choice as $choice) {
+    if ($choice['chtext'] != '') {
+      db_insert('multipoll_choice')
+        ->fields(array(
+          'nid' => $node->nid,
+          'chtext' => $choice['chtext'],
+          'chvotes' => $choice['chvotes'],
+          'weight' => $choice['weight'],
+        ))
+        ->execute();
+    }
+  }
+}
+/**
+ * Implements hook_update().
+ */
+function multipoll_update($node) {
+  // Update poll settings.
+  db_update('multipoll')
+    ->fields(array(
+      'runtime' => $node->runtime,
+      'active' => $node->active,
+      'choice_num' => $node->choice_num,
+    ))
+    ->condition('nid', $node->nid)
+    ->execute();
+
+  // Poll choices with empty titles signifies removal. We remove all votes to
+  // the removed options, so people who voted on them can vote again.
+  foreach ($node->choice as $key => $choice) {
+    if (!empty($choice['chtext'])) {
+      db_merge('multipoll_choice')
+        ->key(array('chid' => $choice['chid']))
+        ->fields(array(
+          'chtext' => $choice['chtext'],
+          'chvotes' => (int) $choice['chvotes'],
+          'weight' => $choice['weight'],
+        ))
+        ->insertFields(array(
+          'nid' => $node->nid,
+          'chtext' => $choice['chtext'],
+          'chvotes' => (int) $choice['chvotes'],
+          'weight' => $choice['weight'],
+        ))
+        ->execute();
+    }
+    else {
+      db_delete('multipoll_vote')
+        ->condition('nid', $node->nid)
+        ->condition('chid', $key)
+        ->execute();
+      db_delete('multipoll_choice')
+        ->condition('nid', $node->nid)
+        ->condition('chid', $choice['chid'])
+        ->execute();
+    }
+  }
+}
+/**
+ * Implements hook_delete().
+ */
+function multipoll_delete($node) {
+  db_delete('multipoll')
+    ->condition('nid', $node->nid)
+    ->execute();
+  db_delete('multipoll_choice')
+    ->condition('nid', $node->nid)
+    ->execute();
+  db_delete('multipoll_vote')
+    ->condition('nid', $node->nid)
+    ->execute();
+}
+/**
+ * Implements hook_view().
+ */
+function multipoll_view($node, $view_mode) {
+  global $user;
+  $output = '';
+  $help_msg = $node->choice_num > 1 ?
+        t("You can choose less than @choice_num choices.",array('@choice_num' => $node->choice_num))
+      : t("You can choose only one choice.");
+
+  if (!empty($node->allowvotes) && empty($node->show_results)) {
+    $node->content['multipoll_help'] = array(
+      '#markup' => '<p>'.$help_msg.'</p>',
+      '#prefix' => '<div id="multipoll-help">',
+      '#suffix' => '</div>',
+    );
+    $node->content['poll_view_voting'] = drupal_get_form('multipoll_view_voting', $node);//如果存在和form_id相同的函数，则使用这个函数.这里的$node会作为第3个参数传入后面的方法
+  }
+  else {
+    $node->content['poll_view_results'] = array('#markup' => multipoll_view_results($node, $view_mode));
+  }
+  return $node;
+}
+
+/**
+ * Generates the voting form for a poll.
+ *
+ * @ingroup forms
+ * @see poll_vote()
+ * @see phptemplate_preprocess_poll_vote()
+ */
+function multipoll_view_voting($form, &$form_state, $node, $block = FALSE) {
+//   dpm($node);
+  $type = ($node->choice_num > 1 ) ? 'checkboxes' : 'radios';
+
+  if ($node->choice) {
+    $list = array();
+    foreach ($node->choice as $i => $choice) {
+      $list[$i] = check_plain($choice['chtext']);
+    }
+    $form['choice'] = array(
+      '#type' => $type,//选择性的采用单选或复选
+      '#title' => t('Choices'),
+      '#title_display' => 'invisible',
+      '#options' => $list,
+    );
+  }
+
+  $form['vote'] = array(
+    '#type' => 'submit',
+    '#value' => t('Vote'),
+    '#submit' => array('multipoll_vote'),//指定处理函数名称
+  );
+
+  // Store the node so we can get to it in submit functions.
+  $form['#node'] = $node;
+  $form['#block'] = $block;
+
+  // Set form caching because we could have multiple of these forms on
+  // the same page, and we want to ensure the right one gets picked.
+  $form_state['cache'] = TRUE;
+
+  // Provide a more cleanly named voting form theme.
+  $form['#theme'] = 'multipoll_vote';//使用模板文件,在hook_theme中定义
+  //dpm($form);
+  return $form;
+}
+
+/**
+ * Validation function for processing votes
+ */
+function multipoll_view_voting_validate($form, &$form_state) {
+//   dpm($form);
+//   dpm($form_state);
+  $checks = 0;
+  if(is_array($form_state['values']['choice'])){
+    foreach ($form_state['values']['choice'] as $key => $value){
+      if(intval($value) > 0) {
+        $checks++;
+      }
+    }
+  } elseif (!empty($form_state['values']['choice'])){//单选
+    $checks = 1;
+  }
+
+  if ($checks == 0) {
+    form_set_error( 'choice', t('Your vote could not be recorded because you did not select any of the choices.'));
+  }
+if ($checks > $form['#node']->choice_num) {
+    form_set_error( 'choice', t('You select too any choices.'));
+  }
+}
+/**
+ * Themes the voting form for a poll.主题化模板的前处理函数，生成必要的变量
+ *
+ * Inputs: $form
+ */
+function template_preprocess_multipoll_vote(&$variables) {
+// dpm($variables);
+  $form = $variables['form'];
+  $variables['choice'] = drupal_render($form['choice']);
+  $variables['title'] = check_plain($form['#node']->title);
+  $variables['vote'] = drupal_render($form['vote']);
+  $variables['rest'] = drupal_render_children($form);
+  $variables['block'] = $form['#block'];
+  if ($variables['block']) {
+    $variables['theme_hook_suggestions'][] = 'poll_vote__block';
+  }
+}
+/**
+ * Generates a graphical representation of the results of a poll.
+ */
+function multipoll_view_results($node, $view_mode, $block = FALSE) {
+  // Make sure that choices are ordered by their weight.
+  uasort($node->choice, 'drupal_sort_weight');//uasort是一个php函数，第二个参数是排序函数
+
+  // Count the votes and find the maximum.
+  $total_votes = 0;
+  $max_votes = 0;
+  foreach ($node->choice as $choice) {
+    if (isset($choice['chvotes'])) {
+      $total_votes += $choice['chvotes'];
+      $max_votes = max($max_votes, $choice['chvotes']);
+    }
+  }
+
+  $poll_results = '';
+  foreach ($node->choice as $i => $choice) {
+    if (!empty($choice['chtext'])) {
+      $chvotes = isset($choice['chvotes']) ? $choice['chvotes'] : NULL;
+      //模板里面会用到前处理的变量
+      $poll_results .= theme('multipoll_bar', array('title' => $choice['chtext'], 'votes' => $chvotes, 'total_votes' => $total_votes, 'vote' => isset($node->vote) && $node->vote == $i, 'block' => $block));
+    }
+  }
+
+  return theme('multipoll_results', array('raw_title' => $node->title, 'results' => $poll_results, 'votes' => $total_votes, 'raw_links' => isset($node->links) ? $node->links : array(), 'block' => $block, 'nid' => $node->nid, 'vote' => isset($node->vote) ? $node->vote : NULL));
+}
+
+/**
+ * Preprocess the poll_bar theme hook.
+ *
+ * Inputs: $title, $votes, $total_votes, $voted, $block
+ *
+ * @see poll-bar.tpl.php
+ * @see poll-bar--block.tpl.php
+ * @see theme_poll_bar()
+ */
+function template_preprocess_multipoll_bar(&$variables) {
+  if ($variables['block']) {
+    $variables['theme_hook_suggestions'][] = 'poll_bar__block';
+  }
+  $variables['title'] = check_plain($variables['title']);
+  $variables['percentage'] = round($variables['votes'] * 100 / max($variables['total_votes'], 1));
+}
+
+/**
+ * Submit handler for processing a vote.
+ */
+function multipoll_vote($form, &$form_state) {
+  $node = $form['#node'];
+  $choice = "";
+  $first = TRUE;
+  if (is_array($form_state['values']['choice'])){
+    foreach ($form_state['values']['choice'] as $key => $value ){
+      if(intval($value) > 0){
+        $choice = $first ? $value : $choice.",".$value;
+        $first = FALSE;
+      }
+    }
+  } elseif (!empty($form_state['values']['choice'])) {
+    $choice = strval(intval($form_state['values']['choice']));
+  }
+  global $user;
+  $vtid = db_insert('multipoll_vote')//db_insert可以返回主键。
+    ->fields(array(
+      'nid' => $node->nid,
+      'chids' => $choice,
+      'uid' => $user->uid,
+      'hostname' => ip_address(),
+      'timestamp' => REQUEST_TIME,
+    ))
+    ->execute();
+
+  // Add one to the votes.
+  foreach (explode(',', $choice) as $key => $value){
+    if(intval($value) > 0) {
+      db_update('multipoll_choice')
+        ->expression('chvotes', 'chvotes + 1')
+        ->condition('chid', $value)
+        ->execute();
+    }
+  }
+  cache_clear_all();
+
+  if (!$user->uid) {
+    // The vote is recorded so the user gets the result view instead of the
+    // voting form when viewing the poll. Saving a value in $_SESSION has the
+    // convenient side effect of preventing the user from hitting the page
+    // cache. When anonymous voting is allowed, the page cache should only
+    // contain the voting form, not the results.
+    $_SESSION['multipoll_vote'][$node->nid] = $vtid;
+  }
+
+  drupal_set_message(t('Your vote was recorded.'));
+
+  // Return the user to whatever page they voted from.
+}
+
+
+/**
+ * Returns HTML for an admin poll form for choices.
+ *
+ * @param $variables
+ *   An associative array containing:
+ *   - form: A render element representing the form.
+ *
+ * @ingroup themeable
+ */
+function theme_multipoll_choices($variables) {
+ // dpm($variables);
+  $form = $variables['form'];
+  //和下面的要配合使用，去掉这个后就不能拖动了
+  drupal_add_tabledrag('poll-choice-table', 'order', 'sibling', 'poll-weight');
+
+  $is_admin= user_access('administer nodes');
+  $delta = 0;
+  $rows = array();
+  $headers = array('', t('Choice'));
+  //管理员能看到投票数
+  if ($is_admin) {
+    $headers[] = t('Vote count');
+  }
+  $headers[] = t('Weight');
+  //使用element_children获取它的子元素
+  foreach (element_children($form) as $key) {
+    $delta++;
+    // Set special classes for drag and drop updating.
+    $form[$key]['weight']['#attributes']['class'] = array('poll-weight');
+
+    // Build the table row.
+    $row = array(
+      'data' => array(
+        array('class' => array('choice-flag')),
+        drupal_render($form[$key]['chtext']),
+      ),
+      'class' => array('draggable'),
+    );
+    if ($is_admin) {
+      $row['data'][] = drupal_render($form[$key]['chvotes']);
+    }
+    $row['data'][] = drupal_render($form[$key]['weight']);
+
+    // Add any additional classes set on the row.
+    if (!empty($form[$key]['#attributes']['class'])) {
+      $row['class'] = array_merge($row['class'], $form[$key]['#attributes']['class']);
+    }
+
+    $rows[] = $row;
+  }
+  //和上面的drupal_add_tabledrag配合使用
+  $output = theme('table', array('header' => $headers, 'rows' => $rows, 'attributes' => array('id' => 'poll-choice-table')));
+  $output .= drupal_render_children($form);//其实已经没有其他要素了，可以去掉这句
+  return $output;
+}
+
+/**
+ * Implements hook_user_cancel().
+ */
+function multipoll_user_cancel($edit, $account, $method) {
+  switch ($method) {
+    case 'user_cancel_reassign':
+      db_update('multipoll_vote')
+        ->fields(array('uid' => 0))
+        ->condition('uid', $account->uid)
+        ->execute();
+      break;
+  }
+}
+
+/**
+ * Implements hook_user_delete().
+ */
+function multipoll_user_delete($account) {
+  db_delete('multipoll_vote')
+    ->condition('uid', $account->uid)
+    ->execute();
+}
+

@@ -1,0 +1,6 @@
+;$Id$
+name = Build Approval Voting Poll
+desciption = You can select multi-choices at one time.
+package = Self Model
+core = 7.x
+stylesheets[all][] = multipoll.css
